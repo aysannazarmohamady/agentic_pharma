@@ -186,7 +186,7 @@ class VAERSAgent:
         }
         
         if not self.data_loaded:
-            results["thinking"] = "❌ No VAERS data loaded. Please upload data files first."
+            results["thinking"] = "❌ No VAERS data loaded. Please reload data from GitHub."
             return results
         
         try:
@@ -199,11 +199,12 @@ class VAERSAgent:
                 "total_vaccine_records": total_vaccines
             }
             
-            # Manufacturer analysis
-            if "manufacturer" in analysis_plan["query_types"]:
+            # Simple manufacturer analysis
+            if "manufacturer" in analysis_plan["query_types"] or "manufacturer" in user_query.lower():
                 results["thinking"] = "🔍 Analyzing vaccine manufacturers..."
                 
                 if self.vax_df is not None and 'VAX_MANU' in self.vax_df.columns:
+                    # Limit to prevent hanging
                     manufacturer_counts = self.vax_df['VAX_MANU'].value_counts().head(10)
                     
                     results["main_table"] = pd.DataFrame({
@@ -212,100 +213,77 @@ class VAERSAgent:
                         'Percentage': (manufacturer_counts.values / len(self.vax_df) * 100).round(2)
                     })
                     
-                    results["additional_info"] = f"Analysis of {len(manufacturer_counts)} top vaccine manufacturers"
+                    results["additional_info"] = f"Top 10 vaccine manufacturers by report count"
+                else:
+                    results["main_table"] = pd.DataFrame({"Error": ["Manufacturer data not available"]})
             
-            # Symptom analysis
-            elif "symptoms" in analysis_plan["query_types"]:
-                results["thinking"] = "🧠 Analyzing symptoms and adverse events..."
+            # Simple neurological symptoms analysis  
+            elif "neurological" in user_query.lower() or "symptoms" in user_query.lower():
+                results["thinking"] = "🧠 Analyzing neurological symptoms..."
                 
                 if self.symptoms_df is not None:
-                    # Analyze all symptoms
-                    all_symptoms = []
-                    for col in ['SYMPTOM1', 'SYMPTOM2', 'SYMPTOM3', 'SYMPTOM4', 'SYMPTOM5']:
-                        if col in self.symptoms_df.columns:
-                            symptoms = self.symptoms_df[col].dropna().tolist()
-                            all_symptoms.extend(symptoms)
-                    
-                    if analysis_plan["focus_neurological"]:
-                        # Focus on neurological symptoms
-                        neuro_counts = {}
-                        for symptom in self.neurological_symptoms:
-                            count = sum(1 for s in all_symptoms if isinstance(s, str) and symptom.lower() in s.lower())
-                            if count > 0:
-                                neuro_counts[symptom] = count
+                    # Quick neurological symptom check
+                    neuro_found = {}
+                    for symptom in self.neurological_symptoms[:5]:  # Limit to prevent hanging
+                        count = 0
+                        for col in ['SYMPTOM1', 'SYMPTOM2']:  # Check only first 2 columns
+                            if col in self.symptoms_df.columns:
+                                symptom_data = self.symptoms_df[col].fillna('').astype(str)
+                                count += symptom_data.str.contains(symptom, case=False, na=False).sum()
                         
-                        if neuro_counts:
-                            results["main_table"] = pd.DataFrame([
-                                {"Neurological_Symptom": k, "Report_Count": v} 
-                                for k, v in sorted(neuro_counts.items(), key=lambda x: x[1], reverse=True)
-                            ])
-                            results["additional_info"] = f"Found {len(neuro_counts)} neurological symptoms of interest"
+                        if count > 0:
+                            neuro_found[symptom] = count
+                    
+                    if neuro_found:
+                        results["main_table"] = pd.DataFrame([
+                            {"Neurological_Symptom": k, "Report_Count": v} 
+                            for k, v in sorted(neuro_found.items(), key=lambda x: x[1], reverse=True)
+                        ])
+                        results["additional_info"] = f"Found {len(neuro_found)} neurological symptoms"
                     else:
-                        # General symptom analysis
-                        symptom_counts = pd.Series(all_symptoms).value_counts().head(15)
-                        results["main_table"] = pd.DataFrame({
-                            'Symptom': symptom_counts.index,
-                            'Report_Count': symptom_counts.values
-                        })
-                        results["additional_info"] = f"Top {len(symptom_counts)} most reported symptoms"
+                        results["main_table"] = pd.DataFrame({"Message": ["No specific neurological symptoms found in search"]})
+                else:
+                    results["main_table"] = pd.DataFrame({"Error": ["Symptoms data not available"]})
             
-            # Statistics analysis
-            elif "statistics" in analysis_plan["query_types"]:
-                results["thinking"] = "📊 Calculating statistics..."
+            # Simple statistics
+            else:
+                results["thinking"] = "📊 Calculating basic statistics..."
                 
                 stats_data = []
                 
                 if self.symptoms_df is not None:
                     stats_data.append({
-                        "Metric": "Total Adverse Event Reports",
-                        "Value": len(self.symptoms_df['VAERS_ID'].unique()),
-                        "Description": "Unique VAERS IDs in symptoms data"
+                        "Metric": "Total Symptom Reports",
+                        "Value": f"{len(self.symptoms_df):,}",
+                        "Description": "Individual symptom records"
+                    })
+                    
+                    stats_data.append({
+                        "Metric": "Unique VAERS Reports",
+                        "Value": f"{len(self.symptoms_df['VAERS_ID'].unique()):,}",
+                        "Description": "Unique adverse event reports"
                     })
                 
                 if self.vax_df is not None:
                     stats_data.append({
-                        "Metric": "Total Vaccine Administrations",
-                        "Value": len(self.vax_df),
-                        "Description": "Total vaccine records"
+                        "Metric": "Total Vaccine Records",
+                        "Value": f"{len(self.vax_df):,}",
+                        "Description": "Vaccine administration records"
                     })
                     
                     if 'VAX_MANU' in self.vax_df.columns:
                         stats_data.append({
-                            "Metric": "Number of Manufacturers",
-                            "Value": self.vax_df['VAX_MANU'].nunique(),
-                            "Description": "Unique vaccine manufacturers"
+                            "Metric": "Vaccine Manufacturers",
+                            "Value": f"{self.vax_df['VAX_MANU'].nunique()}",
+                            "Description": "Unique manufacturers"
                         })
                 
                 results["main_table"] = pd.DataFrame(stats_data)
-                results["additional_info"] = "Key VAERS dataset statistics"
-            
-            # Default analysis if no specific type detected
-            else:
-                results["thinking"] = "🔍 Performing general VAERS data analysis..."
-                
-                # Create a summary table
-                summary_data = []
-                
-                if self.symptoms_df is not None:
-                    summary_data.append({
-                        "Data_Type": "Symptoms",
-                        "Records": len(self.symptoms_df),
-                        "Unique_Reports": len(self.symptoms_df['VAERS_ID'].unique())
-                    })
-                
-                if self.vax_df is not None:
-                    summary_data.append({
-                        "Data_Type": "Vaccines", 
-                        "Records": len(self.vax_df),
-                        "Unique_Reports": len(self.vax_df['VAERS_ID'].unique())
-                    })
-                
-                results["main_table"] = pd.DataFrame(summary_data)
-                results["additional_info"] = "General VAERS data overview"
+                results["additional_info"] = "Basic VAERS dataset statistics"
         
         except Exception as e:
             results["thinking"] = f"❌ Error during analysis: {str(e)}"
-            results["main_table"] = pd.DataFrame({"Error": ["Analysis failed"]})
+            results["main_table"] = pd.DataFrame({"Error": [f"Analysis failed: {str(e)}"]})
         
         return results
     
