@@ -4,8 +4,6 @@ import numpy as np
 from groq import Groq
 import json
 from typing import Dict, Any
-import plotly.express as px
-import plotly.graph_objects as go
 
 # Page config
 st.set_page_config(
