@@ -95,7 +95,7 @@ class VAERSAgent:
         ]
     
     def load_data(self):
-        """Load VAERS data from uploaded files or GitHub"""
+        """Load VAERS data from GitHub repository"""
         try:
             # Try to load from session state first
             if 'symptoms_df' in st.session_state and 'vax_df' in st.session_state:
@@ -104,12 +104,42 @@ class VAERSAgent:
                 self.data_loaded = True
                 return True
             
-            # Try to load from GitHub repository files
+            # Load from GitHub repository
             try:
-                # You would replace these with actual GitHub raw URLs
-                # For now, we'll use uploaded files
-                return False
-            except:
+                # GitHub raw URLs for your uploaded files
+                github_base_url = "https://raw.githubusercontent.com/aysannazarmohamady/agentic_pharma/main/"
+                
+                symptoms_url = github_base_url + "2024VAERSSYMPTOMS.csv"
+                vax_url = github_base_url + "2024VAERSVAX.csv"
+                
+                st.info("🔄 Loading VAERS data from GitHub repository...")
+                
+                # Load symptoms data
+                self.symptoms_df = pd.read_csv(
+                    symptoms_url,
+                    dtype=str,
+                    encoding='utf-8',
+                    on_bad_lines='skip'
+                )
+                
+                # Load vaccine data  
+                self.vax_df = pd.read_csv(
+                    vax_url,
+                    dtype=str,
+                    encoding='latin-1', 
+                    on_bad_lines='skip'
+                )
+                
+                # Store in session state
+                st.session_state.symptoms_df = self.symptoms_df
+                st.session_state.vax_df = self.vax_df
+                
+                self.data_loaded = True
+                st.success(f"✅ Data loaded from GitHub! Symptoms: {len(self.symptoms_df):,} records, Vaccines: {len(self.vax_df):,} records")
+                return True
+                
+            except Exception as github_error:
+                st.warning(f"Could not load from GitHub: {str(github_error)}")
                 return False
                 
         except Exception as e:
@@ -339,10 +369,31 @@ def main():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
         st.session_state.chat_history.append({
-            "message": "👋 Hello! I'm your VAERS AI Agent. Upload your data files and ask me questions about vaccine adverse events, manufacturers, symptoms, or statistics.",
+            "message": "👋 Hello! I'm your VAERS AI Agent. I'm loading the latest VAERS data from GitHub. Ask me questions about vaccine adverse events, manufacturers, symptoms, or statistics.",
             "is_user": False,
             "is_thinking": False
         })
+    
+    # Initialize agent and auto-load data
+    agent = VAERSAgent(groq_api_key)
+    
+    # Auto-load data on startup
+    if 'data_auto_loaded' not in st.session_state:
+        with st.spinner("🔄 Loading VAERS data from GitHub..."):
+            data_loaded = agent.load_data()
+            if data_loaded:
+                st.session_state.chat_history.append({
+                    "message": f"✅ **VAERS data loaded successfully!**\n\n📊 **Dataset Ready:**\n- Symptoms: {len(agent.symptoms_df):,} records\n- Vaccines: {len(agent.vax_df):,} records\n\n🤖 **Ready to answer your questions!**\n\nTry asking:\n- *'Show me top vaccine manufacturers'*\n- *'What are the most common neurological symptoms?'*\n- *'Statistics on adverse events'*",
+                    "is_user": False,
+                    "is_thinking": False
+                })
+            else:
+                st.session_state.chat_history.append({
+                    "message": "❌ Could not load VAERS data from GitHub. Please check the repository and file names.",
+                    "is_user": False,
+                    "is_thinking": False
+                })
+        st.session_state.data_auto_loaded = True
     
     # Sidebar for configuration
     with st.sidebar:
@@ -358,42 +409,25 @@ def main():
         
         st.markdown("---")
         
-        # Data upload
-        st.subheader("📁 Upload VAERS Data")
+        # Data status
+        st.subheader("📊 Data Status")
         
-        symptoms_file = st.file_uploader(
-            "VAERS Symptoms CSV",
-            type=['csv'],
-            key="symptoms_upload"
-        )
+        if 'symptoms_df' in st.session_state and 'vax_df' in st.session_state:
+            st.success("✅ Data Loaded from GitHub")
+            st.metric("Symptoms Records", f"{len(st.session_state.symptoms_df):,}")
+            st.metric("Vaccine Records", f"{len(st.session_state.vax_df):,}")
+        else:
+            st.warning("⏳ Loading data...")
         
-        vax_file = st.file_uploader(
-            "VAERS Vaccine CSV",
-            type=['csv'],
-            key="vax_upload"
-        )
-        
-        # Load data button
-        if st.button("🔄 Load Data", type="primary"):
-            if symptoms_file and vax_file:
-                try:
-                    # Load data
-                    st.session_state.symptoms_df = pd.read_csv(symptoms_file, dtype=str, encoding='utf-8', on_bad_lines='skip')
-                    st.session_state.vax_df = pd.read_csv(vax_file, dtype=str, encoding='latin-1', on_bad_lines='skip')
-                    
-                    # Add success message to chat
-                    st.session_state.chat_history.append({
-                        "message": f"✅ Data loaded successfully!\n\n📊 **Dataset Info:**\n- Symptoms: {len(st.session_state.symptoms_df):,} records\n- Vaccines: {len(st.session_state.vax_df):,} records\n\nNow you can ask me questions!",
-                        "is_user": False,
-                        "is_thinking": False
-                    })
-                    
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Error loading data: {str(e)}")
-            else:
-                st.warning("Please upload both files")
+        # Manual reload button
+        if st.button("🔄 Reload Data from GitHub"):
+            if 'data_auto_loaded' in st.session_state:
+                del st.session_state['data_auto_loaded']
+            if 'symptoms_df' in st.session_state:
+                del st.session_state['symptoms_df']
+            if 'vax_df' in st.session_state:
+                del st.session_state['vax_df']
+            st.rerun()
         
         st.markdown("---")
         st.markdown("### 💭 Example Questions")
@@ -406,8 +440,7 @@ def main():
         """)
     
     # Initialize agent
-    agent = VAERSAgent(groq_api_key)
-    agent.load_data()
+    # Note: agent is already initialized above with auto-load
     
     # Chat interface
     st.markdown("### 💬 Chat with VAERS AI Agent")
