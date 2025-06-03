@@ -309,7 +309,7 @@ class VAERSProcessor:
 
 # Main Streamlit App
 def main():
-    st.title("🏥 VAERS Data Analyzer with Groq AI")
+    st.title("Agentic Pharma")
     st.markdown("---")
     
     # Sidebar
