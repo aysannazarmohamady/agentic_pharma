@@ -1,508 +1,507 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
-import warnings
 from groq import Groq
 import json
-from typing import List, Dict, Any
-import io
+from typing import Dict, Any
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Page config
 st.set_page_config(
-    page_title="VAERS Data Analyzer",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="VAERS AI Agent",
+    page_icon="🤖",
+    layout="wide"
 )
 
-# Custom CSS
+# Custom CSS for ChatGPT-like interface
 st.markdown("""
 <style>
     .main > div {
         padding-top: 2rem;
     }
-    .stAlert {
-        margin-top: 1rem;
+    
+    .chat-container {
+        height: 400px;
+        overflow-y: scroll;
+        padding: 1rem;
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        margin-bottom: 1rem;
+        background-color: #f8f9fa;
     }
-    .css-1d391kg {
-        padding-top: 1rem;
+    
+    .user-message {
+        background-color: #007bff;
+        color: white;
+        padding: 10px 15px;
+        border-radius: 18px;
+        margin: 5px 0;
+        margin-left: 20%;
+        text-align: right;
     }
+    
+    .agent-message {
+        background-color: #e9ecef;
+        color: #333;
+        padding: 10px 15px;
+        border-radius: 18px;
+        margin: 5px 0;
+        margin-right: 20%;
+    }
+    
+    .stChatInput {
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        background: white;
+        padding: 1rem;
+        border-top: 1px solid #ddd;
+    }
+    
     h1 {
-        color: #1f77b4;
         text-align: center;
-        padding-bottom: 2rem;
+        color: #1f77b4;
+        margin-bottom: 2rem;
+    }
+    
+    .agent-thinking {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 10px 15px;
+        border-radius: 18px;
+        margin: 5px 0;
+        margin-right: 20%;
+        font-style: italic;
     }
 </style>
 """, unsafe_allow_html=True)
 
-class VAERSProcessor:
+class VAERSAgent:
     def __init__(self, groq_api_key: str):
-        """Initialize VAERS processor with Groq API key"""
-        if groq_api_key:
-            self.client = Groq(api_key=groq_api_key)
-        else:
-            self.client = None
+        """Initialize VAERS AI Agent"""
+        self.client = Groq(api_key=groq_api_key) if groq_api_key else None
+        self.symptoms_df = None
+        self.vax_df = None
+        self.data_loaded = False
         
-        self.symptoms_of_interest = [
-            "Acute motor axonal neuropathy",
-            "Acute motor-sensory axonal neuropathy",
-            "Guillain-Barre syndrome", 
-            "Miller Fisher syndrome",
-            "Subacute inflammatory demyelinating polyneuropathy",
-            "Autoimmune nodopathy",
+        # Neurological symptoms of interest
+        self.neurological_symptoms = [
+            "Guillain-Barre syndrome", "Miller Fisher syndrome",
+            "Acute motor axonal neuropathy", "Motor neurone disease",
+            "Muscle weakness", "Demyelinating polyneuropathy",
             "Chronic inflammatory demyelinating polyradiculoneuropathy",
-            "Demyelinating polyneuropathy",
-            "Lewis-Sumner syndrome",
-            "Multifocal motor neuropathy",
-            "Polyneuropathy idiopathic",
-            "Polyneuropathy idiopathic progressive",
-            "Autoimmune neuropathy",
-            "Immune-mediated neuropathy",
-            "Peripheral motor neuropathy",
-            "Lower motor neurone lesion",
-            "Motor neurone disease",
-            "Upper motor neurone lesion",
-            "Neuromuscular block prolonged",
-            "Neuromuscular blockade",
-            "Sensorimotor disorder",
-            "Muscle weakness",
-            "Neuromuscular pain",
-            "Neuromyopathy",
-            "Neuropathic muscular atrophy",
-            "Autoimmune demyelinating disease"
+            "Autoimmune neuropathy", "Peripheral motor neuropathy"
         ]
     
-    def clean_vaers_id(self, vaers_id):
-        """Clean VAERS_ID by removing leading zeros and whitespace"""
-        if pd.isna(vaers_id):
-            return vaers_id
-        
-        # Convert to string and strip whitespace
-        cleaned = str(vaers_id).strip()
-        
-        # Remove leading zeros
-        cleaned = cleaned.lstrip('0')
-        
-        # Return original if all zeros were removed
-        return cleaned if cleaned else '0'
-    
-    def process_symptoms_file(self, file_content) -> pd.DataFrame:
-        """Process VAERS symptoms file similar to R function"""
+    def load_data(self):
+        """Load VAERS data from uploaded files or GitHub"""
         try:
-            st.info("🔄 Processing symptoms file...")
+            # Try to load from session state first
+            if 'symptoms_df' in st.session_state and 'vax_df' in st.session_state:
+                self.symptoms_df = st.session_state.symptoms_df
+                self.vax_df = st.session_state.vax_df
+                self.data_loaded = True
+                return True
             
-            # Try different encodings and handle CSV parsing issues
-            encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-            df = None
-            
-            for encoding in encodings_to_try:
-                try:
-                    # Reset file pointer
-                    file_content.seek(0)
-                    
-                    # Read CSV with error handling
-                    df = pd.read_csv(file_content, 
-                                   dtype={
-                                       'VAERS_ID': str,
-                                       'SYMPTOM1': str,
-                                       'SYMPTOMVERSION1': str,
-                                       'SYMPTOM2': str,
-                                       'SYMPTOMVERSION2': str,
-                                       'SYMPTOM3': str,
-                                       'SYMPTOMVERSION3': str,
-                                       'SYMPTOM4': str,
-                                       'SYMPTOMVERSION4': str,
-                                       'SYMPTOM5': str,
-                                       'SYMPTOMVERSION5': str
-                                   },
-                                   na_values=['', 'NA', 'NULL'],
-                                   encoding=encoding,
-                                   on_bad_lines='skip',
-                                   quoting=1,
-                                   escapechar='\\')
-                    st.success(f"✅ Successfully read with {encoding} encoding")
-                    break
-                except Exception as parse_error:
-                    if encoding == encodings_to_try[-1]:
-                        # Try with more lenient settings
-                        try:
-                            file_content.seek(0)
-                            df = pd.read_csv(file_content,
-                                           encoding=encoding,
-                                           on_bad_lines='skip',
-                                           sep=',',
-                                           quotechar='"',
-                                           escapechar=None,
-                                           dtype=str)
-                            st.success(f"✅ Read with lenient settings using {encoding}")
-                            break
-                        except:
-                            continue
-                    continue
-            
-            if df is None:
-                raise Exception("Could not read file with any encoding")
-            
-            # Clean VAERS_ID
-            if 'VAERS_ID' in df.columns:
-                df['VAERS_ID'] = df['VAERS_ID'].apply(self.clean_vaers_id)
-            
-            # Add year column
-            df['YEAR'] = '2024'  # Default year
-            
-            st.success(f"✅ Successfully processed symptoms file - Shape: {df.shape}")
-            return df
-            
-        except Exception as e:
-            st.error(f"❌ Error processing symptoms file: {str(e)}")
-            return pd.DataFrame()
-    
-    def process_vax_file(self, file_content) -> pd.DataFrame:
-        """Process VAERS vax file similar to R function"""
-        try:
-            st.info("🔄 Processing vaccine file...")
-            
-            # Try different encodings
-            encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-            df = None
-            
-            for encoding in encodings_to_try:
-                try:
-                    # Reset file pointer
-                    file_content.seek(0)
-                    
-                    # Read CSV with error handling
-                    df = pd.read_csv(file_content,
-                                   dtype={
-                                       'VAERS_ID': str,
-                                       'VAX_TYPE': str,
-                                       'VAX_MANU': str,
-                                       'VAX_LOT': str,
-                                       'VAX_DOSE_SERIES': str,
-                                       'VAX_ROUTE': str,
-                                       'VAX_SITE': str,
-                                       'VAX_NAME': str,
-                                       'ORDER': str
-                                   },
-                                   na_values=['', 'NA', 'NULL'],
-                                   encoding=encoding,
-                                   on_bad_lines='skip',
-                                   quoting=1,
-                                   escapechar='\\')
-                    st.success(f"✅ Successfully read with {encoding} encoding")
-                    break
-                except Exception as parse_error:
-                    if encoding == encodings_to_try[-1]:
-                        try:
-                            file_content.seek(0)
-                            df = pd.read_csv(file_content,
-                                           encoding=encoding,
-                                           on_bad_lines='skip',
-                                           sep=',',
-                                           quotechar='"',
-                                           escapechar=None,
-                                           dtype=str)
-                            st.success(f"✅ Read with lenient settings using {encoding}")
-                            break
-                        except:
-                            continue
-                    continue
-            
-            if df is None:
-                raise Exception("Could not read file with any encoding")
-            
-            # Clean VAERS_ID
-            if 'VAERS_ID' in df.columns:
-                df['VAERS_ID'] = df['VAERS_ID'].apply(self.clean_vaers_id)
-            
-            # Clean string columns
-            string_cols = ['VAX_TYPE', 'VAX_MANU', 'VAX_LOT', 'VAX_DOSE_SERIES', 
-                          'VAX_ROUTE', 'VAX_SITE', 'VAX_NAME']
-            
-            for col in string_cols:
-                if col in df.columns:
-                    df[col] = df[col].astype(str).apply(lambda x: x.strip() if pd.notna(x) and x != 'nan' else np.nan)
-            
-            # Convert ORDER to numeric if it exists
-            if 'ORDER' in df.columns:
-                df['ORDER'] = pd.to_numeric(df['ORDER'], errors='coerce')
-            
-            # Add year column
-            df['YEAR'] = '2024'
-            
-            st.success(f"✅ Successfully processed vaccine file - Shape: {df.shape}")
-            return df
-            
-        except Exception as e:
-            st.error(f"❌ Error processing vaccine file: {str(e)}")
-            return pd.DataFrame()
-    
-    def analyze_with_groq(self, symptoms_df: pd.DataFrame, vax_df: pd.DataFrame) -> str:
-        """Use Groq LLM to analyze the VAERS data"""
-        
-        if self.client is None:
-            return "⚠️ Groq API key not provided. Analysis skipped."
-        
-        # Prepare summary statistics for the prompt
-        total_reports = len(symptoms_df['VAERS_ID'].unique()) if not symptoms_df.empty else 0
-        total_vaccines = len(vax_df) if not vax_df.empty else 0
-        
-        # Get top manufacturers
-        top_manufacturers = {}
-        if not vax_df.empty and 'VAX_MANU' in vax_df.columns:
-            top_manufacturers = vax_df['VAX_MANU'].value_counts().head(5).to_dict()
-        
-        # Check for symptoms of interest
-        symptoms_found = []
-        if not symptoms_df.empty:
-            all_symptoms = []
-            for col in ['SYMPTOM1', 'SYMPTOM2', 'SYMPTOM3', 'SYMPTOM4', 'SYMPTOM5']:
-                if col in symptoms_df.columns:
-                    all_symptoms.extend(symptoms_df[col].dropna().tolist())
-            
-            for symptom in self.symptoms_of_interest:
-                if any(symptom.lower() in s.lower() for s in all_symptoms if isinstance(s, str)):
-                    symptoms_found.append(symptom)
-        
-        # Create prompt for Groq
-        prompt = f"""
-        Analyze the following VAERS (Vaccine Adverse Event Reporting System) data summary:
-
-        Dataset Overview:
-        - Total adverse event reports: {total_reports}
-        - Total vaccine administrations recorded: {total_vaccines}
-        - Top vaccine manufacturers: {top_manufacturers}
-        - Neurological symptoms of interest found: {symptoms_found[:10]}
-
-        Key neurological conditions being monitored:
-        {', '.join(self.symptoms_of_interest[:15])}
-
-        Please provide:
-        1. A brief analysis of the data quality and completeness
-        2. Key insights about adverse event patterns
-        3. Any notable findings regarding neurological symptoms
-        4. Recommendations for further analysis
-        5. Limitations of this data
-
-        Keep the analysis professional, objective, and focused on public health insights.
-        """
-        
-        try:
-            with st.spinner("🤖 Analyzing data with Groq AI..."):
-                chat_completion = self.client.chat.completions.create(
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
-                    temperature=0.3,
-                    max_tokens=1500
-                )
+            # Try to load from GitHub repository files
+            try:
+                # You would replace these with actual GitHub raw URLs
+                # For now, we'll use uploaded files
+                return False
+            except:
+                return False
                 
-                return chat_completion.choices[0].message.content
-            
         except Exception as e:
-            return f"❌ Error in Groq analysis: {str(e)}"
-
-# Main Streamlit App
-def main():
-    st.title("Agentic Pharma")
-    st.markdown("---")
+            st.error(f"Error loading data: {str(e)}")
+            return False
     
-    # Sidebar
+    def analyze_query(self, user_query: str) -> Dict[str, Any]:
+        """Analyze user query and determine what action to take"""
+        
+        # Define query types and corresponding actions
+        query_patterns = {
+            "manufacturer": ["manufacturer", "company", "pfizer", "moderna", "j&j", "johnson"],
+            "symptoms": ["symptom", "adverse", "effect", "reaction", "neurological"],
+            "statistics": ["count", "number", "total", "average", "percentage", "rate"],
+            "comparison": ["compare", "versus", "vs", "difference", "between"],
+            "trend": ["trend", "over time", "year", "monthly", "increase", "decrease"],
+            "severity": ["death", "severe", "serious", "hospitalization", "disability"]
+        }
+        
+        query_lower = user_query.lower()
+        detected_types = []
+        
+        for query_type, keywords in query_patterns.items():
+            if any(keyword in query_lower for keyword in keywords):
+                detected_types.append(query_type)
+        
+        # Determine specific analysis based on query content
+        analysis_plan = {
+            "query_types": detected_types,
+            "needs_table": True,
+            "needs_chart": "trend" in detected_types or "comparison" in detected_types,
+            "focus_neurological": any(symptom.lower() in query_lower for symptom in self.neurological_symptoms)
+        }
+        
+        return analysis_plan
+    
+    def execute_analysis(self, user_query: str, analysis_plan: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the analysis based on the plan"""
+        
+        results = {
+            "thinking": "🤖 Analyzing VAERS data...",
+            "data_summary": {},
+            "main_table": None,
+            "additional_info": "",
+            "chart_data": None
+        }
+        
+        if not self.data_loaded:
+            results["thinking"] = "❌ No VAERS data loaded. Please upload data files first."
+            return results
+        
+        try:
+            # Get basic data summary
+            unique_reports = len(self.symptoms_df['VAERS_ID'].unique()) if self.symptoms_df is not None else 0
+            total_vaccines = len(self.vax_df) if self.vax_df is not None else 0
+            
+            results["data_summary"] = {
+                "total_reports": unique_reports,
+                "total_vaccine_records": total_vaccines
+            }
+            
+            # Manufacturer analysis
+            if "manufacturer" in analysis_plan["query_types"]:
+                results["thinking"] = "🔍 Analyzing vaccine manufacturers..."
+                
+                if self.vax_df is not None and 'VAX_MANU' in self.vax_df.columns:
+                    manufacturer_counts = self.vax_df['VAX_MANU'].value_counts().head(10)
+                    
+                    results["main_table"] = pd.DataFrame({
+                        'Manufacturer': manufacturer_counts.index,
+                        'Report_Count': manufacturer_counts.values,
+                        'Percentage': (manufacturer_counts.values / len(self.vax_df) * 100).round(2)
+                    })
+                    
+                    results["additional_info"] = f"Analysis of {len(manufacturer_counts)} top vaccine manufacturers"
+            
+            # Symptom analysis
+            elif "symptoms" in analysis_plan["query_types"]:
+                results["thinking"] = "🧠 Analyzing symptoms and adverse events..."
+                
+                if self.symptoms_df is not None:
+                    # Analyze all symptoms
+                    all_symptoms = []
+                    for col in ['SYMPTOM1', 'SYMPTOM2', 'SYMPTOM3', 'SYMPTOM4', 'SYMPTOM5']:
+                        if col in self.symptoms_df.columns:
+                            symptoms = self.symptoms_df[col].dropna().tolist()
+                            all_symptoms.extend(symptoms)
+                    
+                    if analysis_plan["focus_neurological"]:
+                        # Focus on neurological symptoms
+                        neuro_counts = {}
+                        for symptom in self.neurological_symptoms:
+                            count = sum(1 for s in all_symptoms if isinstance(s, str) and symptom.lower() in s.lower())
+                            if count > 0:
+                                neuro_counts[symptom] = count
+                        
+                        if neuro_counts:
+                            results["main_table"] = pd.DataFrame([
+                                {"Neurological_Symptom": k, "Report_Count": v} 
+                                for k, v in sorted(neuro_counts.items(), key=lambda x: x[1], reverse=True)
+                            ])
+                            results["additional_info"] = f"Found {len(neuro_counts)} neurological symptoms of interest"
+                    else:
+                        # General symptom analysis
+                        symptom_counts = pd.Series(all_symptoms).value_counts().head(15)
+                        results["main_table"] = pd.DataFrame({
+                            'Symptom': symptom_counts.index,
+                            'Report_Count': symptom_counts.values
+                        })
+                        results["additional_info"] = f"Top {len(symptom_counts)} most reported symptoms"
+            
+            # Statistics analysis
+            elif "statistics" in analysis_plan["query_types"]:
+                results["thinking"] = "📊 Calculating statistics..."
+                
+                stats_data = []
+                
+                if self.symptoms_df is not None:
+                    stats_data.append({
+                        "Metric": "Total Adverse Event Reports",
+                        "Value": len(self.symptoms_df['VAERS_ID'].unique()),
+                        "Description": "Unique VAERS IDs in symptoms data"
+                    })
+                
+                if self.vax_df is not None:
+                    stats_data.append({
+                        "Metric": "Total Vaccine Administrations",
+                        "Value": len(self.vax_df),
+                        "Description": "Total vaccine records"
+                    })
+                    
+                    if 'VAX_MANU' in self.vax_df.columns:
+                        stats_data.append({
+                            "Metric": "Number of Manufacturers",
+                            "Value": self.vax_df['VAX_MANU'].nunique(),
+                            "Description": "Unique vaccine manufacturers"
+                        })
+                
+                results["main_table"] = pd.DataFrame(stats_data)
+                results["additional_info"] = "Key VAERS dataset statistics"
+            
+            # Default analysis if no specific type detected
+            else:
+                results["thinking"] = "🔍 Performing general VAERS data analysis..."
+                
+                # Create a summary table
+                summary_data = []
+                
+                if self.symptoms_df is not None:
+                    summary_data.append({
+                        "Data_Type": "Symptoms",
+                        "Records": len(self.symptoms_df),
+                        "Unique_Reports": len(self.symptoms_df['VAERS_ID'].unique())
+                    })
+                
+                if self.vax_df is not None:
+                    summary_data.append({
+                        "Data_Type": "Vaccines", 
+                        "Records": len(self.vax_df),
+                        "Unique_Reports": len(self.vax_df['VAERS_ID'].unique())
+                    })
+                
+                results["main_table"] = pd.DataFrame(summary_data)
+                results["additional_info"] = "General VAERS data overview"
+        
+        except Exception as e:
+            results["thinking"] = f"❌ Error during analysis: {str(e)}"
+            results["main_table"] = pd.DataFrame({"Error": ["Analysis failed"]})
+        
+        return results
+    
+    def generate_ai_insights(self, query: str, results: Dict[str, Any]) -> str:
+        """Generate AI insights using Groq"""
+        
+        if not self.client:
+            return "AI insights unavailable (no API key provided)"
+        
+        try:
+            # Prepare context for AI
+            context = f"""
+            User Query: {query}
+            
+            Analysis Results:
+            - Total Reports: {results['data_summary'].get('total_reports', 'N/A')}
+            - Total Vaccine Records: {results['data_summary'].get('total_vaccine_records', 'N/A')}
+            - Analysis Type: {results['additional_info']}
+            
+            Table Data: {results['main_table'].to_string() if results['main_table'] is not None else 'No table data'}
+            
+            Please provide concise insights about this VAERS data analysis in 2-3 sentences.
+            Focus on the most important findings and their potential implications for vaccine safety.
+            """
+            
+            response = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": context
+                    }
+                ],
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                temperature=0.3,
+                max_tokens=200
+            )
+            
+            return response.choices[0].message.content
+        
+        except Exception as e:
+            return f"AI analysis error: {str(e)}"
+
+def display_chat_message(message: str, is_user: bool = False, is_thinking: bool = False):
+    """Display a chat message with appropriate styling"""
+    if is_thinking:
+        css_class = "agent-thinking"
+    elif is_user:
+        css_class = "user-message"
+    else:
+        css_class = "agent-message"
+    
+    st.markdown(f'<div class="{css_class}">{message}</div>', unsafe_allow_html=True)
+
+def main():
+    st.title("🤖 VAERS AI Agent")
+    st.markdown("*Ask me anything about VAERS data and I'll analyze it for you*")
+    
+    # Initialize session state
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+        st.session_state.chat_history.append({
+            "message": "👋 Hello! I'm your VAERS AI Agent. Upload your data files and ask me questions about vaccine adverse events, manufacturers, symptoms, or statistics.",
+            "is_user": False,
+            "is_thinking": False
+        })
+    
+    # Sidebar for configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # API Key input
+        # API Key
         groq_api_key = st.text_input(
-            "🔑 Groq API Key", 
+            "🔑 Groq API Key",
             type="password",
             value="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",
-            help="Enter your Groq API key for AI analysis"
+            help="Your Groq API key for AI insights"
         )
         
         st.markdown("---")
-        st.markdown("### 📋 Instructions")
-        st.markdown("""
-        1. **Upload** VAERS CSV files
-        2. **Process** data automatically  
-        3. **View** AI analysis results
-        4. **Download** processed files
-        """)
         
-        st.markdown("---")
-        st.markdown("### 🔍 Monitored Symptoms")
-        st.markdown("""
-        - Guillain-Barre syndrome
-        - Miller Fisher syndrome
-        - Motor neurone disease
-        - Muscle weakness
-        - And 22 more neurological conditions
-        """)
-    
-    # Initialize processor
-    processor = VAERSProcessor(groq_api_key)
-    
-    # File upload section
-    st.header("📁 Upload VAERS Files")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🩺 Symptoms File")
+        # Data upload
+        st.subheader("📁 Upload VAERS Data")
+        
         symptoms_file = st.file_uploader(
-            "Upload VAERS Symptoms CSV",
+            "VAERS Symptoms CSV",
             type=['csv'],
-            key="symptoms",
-            help="Upload the VAERSSYMPTOMS.csv file"
+            key="symptoms_upload"
         )
-    
-    with col2:
-        st.subheader("💉 Vaccine File")
+        
         vax_file = st.file_uploader(
-            "Upload VAERS Vaccine CSV", 
+            "VAERS Vaccine CSV",
             type=['csv'],
-            key="vax",
-            help="Upload the VAERSVAX.csv file"
+            key="vax_upload"
         )
-    
-    # Process files when both are uploaded
-    if symptoms_file is not None and vax_file is not None:
-        st.markdown("---")
-        st.header("⚡ Processing Data")
         
-        # Process files
-        symptoms_df = processor.process_symptoms_file(symptoms_file)
-        vax_df = processor.process_vax_file(vax_file)
-        
-        if not symptoms_df.empty or not vax_df.empty:
-            
-            # Display summary
-            st.markdown("---")
-            st.header("📊 Data Summary")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "📋 Symptom Records", 
-                    f"{len(symptoms_df):,}" if not symptoms_df.empty else "0"
-                )
-            
-            with col2:
-                st.metric(
-                    "💉 Vaccine Records", 
-                    f"{len(vax_df):,}" if not vax_df.empty else "0"
-                )
-            
-            with col3:
-                unique_reports = len(symptoms_df['VAERS_ID'].unique()) if not symptoms_df.empty else 0
-                st.metric("🆔 Unique Reports", f"{unique_reports:,}")
-            
-            with col4:
-                if not vax_df.empty and 'VAX_MANU' in vax_df.columns:
-                    manufacturers = vax_df['VAX_MANU'].nunique()
-                    st.metric("🏭 Manufacturers", f"{manufacturers}")
-                else:
-                    st.metric("🏭 Manufacturers", "0")
-            
-            # Data preview tabs
-            st.markdown("---")
-            st.header("👀 Data Preview")
-            
-            tab1, tab2 = st.tabs(["🩺 Symptoms Data", "💉 Vaccine Data"])
-            
-            with tab1:
-                if not symptoms_df.empty:
-                    st.dataframe(
-                        symptoms_df.head(100),
-                        use_container_width=True,
-                        height=400
-                    )
+        # Load data button
+        if st.button("🔄 Load Data", type="primary"):
+            if symptoms_file and vax_file:
+                try:
+                    # Load data
+                    st.session_state.symptoms_df = pd.read_csv(symptoms_file, dtype=str, encoding='utf-8', on_bad_lines='skip')
+                    st.session_state.vax_df = pd.read_csv(vax_file, dtype=str, encoding='latin-1', on_bad_lines='skip')
                     
-                    # Download processed symptoms file
-                    csv_symptoms = symptoms_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Processed Symptoms CSV",
-                        data=csv_symptoms,
-                        file_name="DomesticVAERSSYMPTOMS.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.warning("No symptoms data to display")
-            
-            with tab2:
-                if not vax_df.empty:
-                    st.dataframe(
-                        vax_df.head(100),
-                        use_container_width=True,
-                        height=400
-                    )
+                    # Add success message to chat
+                    st.session_state.chat_history.append({
+                        "message": f"✅ Data loaded successfully!\n\n📊 **Dataset Info:**\n- Symptoms: {len(st.session_state.symptoms_df):,} records\n- Vaccines: {len(st.session_state.vax_df):,} records\n\nNow you can ask me questions!",
+                        "is_user": False,
+                        "is_thinking": False
+                    })
                     
-                    # Download processed vax file
-                    csv_vax = vax_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Processed Vaccine CSV",
-                        data=csv_vax,
-                        file_name="DomesticVAERSVAX.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.warning("No vaccine data to display")
-            
-            # AI Analysis section
-            st.markdown("---")
-            st.header("🤖 AI Analysis Results")
-            
-            if groq_api_key:
-                analysis = processor.analyze_with_groq(symptoms_df, vax_df)
-                
-                st.markdown("### 📈 Groq AI Analysis Report")
-                st.markdown(analysis)
-                
-                # Download analysis report
-                st.download_button(
-                    label="📥 Download Analysis Report",
-                    data=analysis,
-                    file_name="VAERS_Analysis_Report.txt",
-                    mime="text/plain"
-                )
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Error loading data: {str(e)}")
             else:
-                st.warning("⚠️ Please enter your Groq API key in the sidebar to enable AI analysis.")
-            
-            # Manufacturer analysis
-            if not vax_df.empty and 'VAX_MANU' in vax_df.columns:
-                st.markdown("---")
-                st.header("🏭 Manufacturer Analysis")
-                
-                manufacturer_counts = vax_df['VAX_MANU'].value_counts().head(10)
-                st.bar_chart(manufacturer_counts)
-                
-                # Show top manufacturers table
-                st.subheader("Top 10 Vaccine Manufacturers")
-                manufacturer_df = pd.DataFrame({
-                    'Manufacturer': manufacturer_counts.index,
-                    'Report Count': manufacturer_counts.values,
-                    'Percentage': (manufacturer_counts.values / len(vax_df) * 100).round(2)
-                })
-                st.dataframe(manufacturer_df, use_container_width=True)
+                st.warning("Please upload both files")
         
-        else:
-            st.error("❌ No data could be processed from the uploaded files. Please check file formats and content.")
+        st.markdown("---")
+        st.markdown("### 💭 Example Questions")
+        st.markdown("""
+        - "Show me top vaccine manufacturers"
+        - "What are the most common neurological symptoms?"
+        - "Compare Pfizer vs Moderna adverse events"
+        - "Statistics on Guillain-Barre syndrome"
+        - "Total number of reports by manufacturer"
+        """)
     
-    else:
-        st.info("👆 Please upload both VAERS files to begin analysis.")
+    # Initialize agent
+    agent = VAERSAgent(groq_api_key)
+    agent.load_data()
     
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style='text-align: center; color: #666; padding: 20px;'>
-        🏥 VAERS Data Analyzer | Powered by Groq AI | Built with Streamlit
-    </div>
-    """, unsafe_allow_html=True)
+    # Chat interface
+    st.markdown("### 💬 Chat with VAERS AI Agent")
+    
+    # Display chat history
+    chat_container = st.container()
+    with chat_container:
+        for chat in st.session_state.chat_history:
+            display_chat_message(
+                chat["message"], 
+                chat["is_user"], 
+                chat.get("is_thinking", False)
+            )
+    
+    # Chat input
+    user_input = st.chat_input("Ask me about VAERS data...")
+    
+    if user_input:
+        # Add user message to chat
+        st.session_state.chat_history.append({
+            "message": user_input,
+            "is_user": True,
+            "is_thinking": False
+        })
+        
+        # Add thinking message
+        st.session_state.chat_history.append({
+            "message": "🤖 Thinking and analyzing your request...",
+            "is_user": False,
+            "is_thinking": True
+        })
+        
+        st.rerun()
+        
+        # Process the query
+        try:
+            # Analyze query and execute
+            analysis_plan = agent.analyze_query(user_input)
+            results = agent.execute_analysis(user_input, analysis_plan)
+            
+            # Remove thinking message
+            st.session_state.chat_history.pop()
+            
+            # Create response message
+            response_parts = []
+            
+            # Add data summary
+            if results["data_summary"]:
+                response_parts.append(f"📈 **Analysis completed for {results['data_summary'].get('total_reports', 'N/A')} reports**")
+            
+            # Add main findings
+            if results["additional_info"]:
+                response_parts.append(f"🔍 **{results['additional_info']}**")
+            
+            # Add table
+            if results["main_table"] is not None and not results["main_table"].empty:
+                response_parts.append("📋 **Results Table:**")
+                response_parts.append(results["main_table"].to_markdown(index=False))
+            
+            # Add AI insights
+            if groq_api_key:
+                ai_insights = agent.generate_ai_insights(user_input, results)
+                response_parts.append(f"🧠 **AI Insights:** {ai_insights}")
+            
+            # Combine response
+            full_response = "\n\n".join(response_parts)
+            
+            # Add agent response to chat
+            st.session_state.chat_history.append({
+                "message": full_response,
+                "is_user": False,
+                "is_thinking": False
+            })
+            
+        except Exception as e:
+            # Remove thinking message
+            if st.session_state.chat_history and st.session_state.chat_history[-1].get("is_thinking"):
+                st.session_state.chat_history.pop()
+            
+            # Add error message
+            st.session_state.chat_history.append({
+                "message": f"❌ Sorry, I encountered an error: {str(e)}",
+                "is_user": False,
+                "is_thinking": False
+            })
+        
+        st.rerun()
+    
+    # Clear chat button
+    col1, col2 = st.columns([6, 1])
+    with col2:
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.chat_history = []
+            st.rerun()
 
 if __name__ == "__main__":
     main()
