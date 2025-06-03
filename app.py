@@ -136,7 +136,7 @@ def display_message(message: str, is_user: bool = False, is_thinking: bool = Fal
     st.markdown(f'<div class="{css_class}">{message}</div>', unsafe_allow_html=True)
 
 def main():
-    st.title("🤖 VAERS AI Agent (Debug Version)")
+    st.title("🤖 VAERS AI Agent")
     st.markdown("*Simple and fast VAERS data analysis*")
     
     # Sidebar
