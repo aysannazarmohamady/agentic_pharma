@@ -363,36 +363,6 @@ def main():
     st.title("🤖 VAERS AI Agent")
     st.markdown("*Ask me anything about VAERS data and I'll analyze it for you*")
     
-    # Initialize session state
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-        st.session_state.chat_history.append({
-            "message": "👋 Hello! I'm your VAERS AI Agent. I'm loading the latest VAERS data from GitHub. Ask me questions about vaccine adverse events, manufacturers, symptoms, or statistics.",
-            "is_user": False,
-            "is_thinking": False
-        })
-    
-    # Initialize agent and auto-load data
-    agent = VAERSAgent(groq_api_key)
-    
-    # Auto-load data on startup
-    if 'data_auto_loaded' not in st.session_state:
-        with st.spinner("🔄 Loading VAERS data from GitHub..."):
-            data_loaded = agent.load_data()
-            if data_loaded:
-                st.session_state.chat_history.append({
-                    "message": f"✅ **VAERS data loaded successfully!**\n\n📊 **Dataset Ready:**\n- Symptoms: {len(agent.symptoms_df):,} records\n- Vaccines: {len(agent.vax_df):,} records\n\n🤖 **Ready to answer your questions!**\n\nTry asking:\n- *'Show me top vaccine manufacturers'*\n- *'What are the most common neurological symptoms?'*\n- *'Statistics on adverse events'*",
-                    "is_user": False,
-                    "is_thinking": False
-                })
-            else:
-                st.session_state.chat_history.append({
-                    "message": "❌ Could not load VAERS data from GitHub. Please check the repository and file names.",
-                    "is_user": False,
-                    "is_thinking": False
-                })
-        st.session_state.data_auto_loaded = True
-    
     # Sidebar for configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -437,8 +407,35 @@ def main():
         - "Total number of reports by manufacturer"
         """)
     
+    # Initialize session state
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+        st.session_state.chat_history.append({
+            "message": "👋 Hello! I'm your VAERS AI Agent. I'm loading the latest VAERS data from GitHub. Ask me questions about vaccine adverse events, manufacturers, symptoms, or statistics.",
+            "is_user": False,
+            "is_thinking": False
+        })
+    
     # Initialize agent
-    # Note: agent is already initialized above with auto-load
+    agent = VAERSAgent(groq_api_key)
+    
+    # Auto-load data on startup
+    if 'data_auto_loaded' not in st.session_state:
+        with st.spinner("🔄 Loading VAERS data from GitHub..."):
+            data_loaded = agent.load_data()
+            if data_loaded:
+                st.session_state.chat_history.append({
+                    "message": f"✅ **VAERS data loaded successfully!**\n\n📊 **Dataset Ready:**\n- Symptoms: {len(agent.symptoms_df):,} records\n- Vaccines: {len(agent.vax_df):,} records\n\n🤖 **Ready to answer your questions!**\n\nTry asking:\n- *'Show me top vaccine manufacturers'*\n- *'What are the most common neurological symptoms?'*\n- *'Statistics on adverse events'*",
+                    "is_user": False,
+                    "is_thinking": False
+                })
+            else:
+                st.session_state.chat_history.append({
+                    "message": "❌ Could not load VAERS data from GitHub. Please check the repository and file names.",
+                    "is_user": False,
+                    "is_thinking": False
+                })
+        st.session_state.data_auto_loaded = True
     
     # Chat interface
     st.markdown("### 💬 Chat with VAERS AI Agent")
